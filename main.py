@@ -48,7 +48,6 @@ BROWSER_RENDERING = os.getenv("BROWSER_RENDERING", "true").strip().lower()
 # Default Referrers (Google, Facebook, and Internal app links)
 DEFAULT_REFERRERS = [
     "https://app.bullpen.fi/",
-    "https://bullpen.fi/",
     "https://www.google.com/",
     "https://www.facebook.com/"
 ]
