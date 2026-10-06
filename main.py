@@ -34,7 +34,6 @@ def parse_referrers(var_name: str, defaults: list):
     if not raw_val:
         return defaults
     
-    # Custom items replace defaults entirely
     items = []
     for item in raw_val.split(","):
         cleaned = item.strip()
@@ -64,10 +63,10 @@ WORKER_MIN, WORKER_MAX = parse_range("WORKER_COUNT_RANGE", 5, 8)
 GAP_MIN, GAP_MAX = parse_range("WORKER_GAP_RANGE", 3.0, 7.0)
 CYCLE_MIN, CYCLE_MAX = parse_range("CYCLE_INTERVAL_RANGE", 45.0, 74.0)
 
-# Browser Rendering Toggle: defaults to "false" to reduce JS overhead
+# Browser Rendering Toggle
 BROWSER_RENDERING = os.getenv("BROWSER_RENDERING", "false").strip().lower()
 
-# Default organic referrers (bullpen completely removed; contains 'none' for direct traffic)
+# Default organic referrers
 DEFAULT_REFERRERS = [
     "https://www.google.com/",
     "https://www.facebook.com/",
@@ -101,6 +100,9 @@ TIER_3 = [
     ("IN", "in"), ("SA", "sa"), ("HK", "hk"), ("TW", "tw"),
     ("ZA", "za"), ("AR", "ar"), ("CL", "cl"), ("IL", "il")
 ]
+
+# Flattened catalog for absolute unique country draws
+ALL_COUNTRIES = [("T1", *c) for c in TIER_1] + [("T2", *c) for c in TIER_2] + [("T3", *c) for c in TIER_3]
 
 
 # ---------------------------------------------------------
@@ -170,19 +172,38 @@ pool = KeyPoolManager(RAW_KEYS)
 
 
 # ---------------------------------------------------------
-# Dynamic Links & Routing
+# Dynamic Links & Routing (NO DUPLICATES PER CYCLE)
 # ---------------------------------------------------------
 def generate_cycle_links(worker_count: int):
     tasks = []
     
-    # Check if custom LINKS environment variable was provided
     if CUSTOM_LINKS:
-        selected_links = random.choices(CUSTOM_LINKS, k=worker_count)
+        pool_links = list(CUSTOM_LINKS)
+        random.shuffle(pool_links)
+        
+        # Take unique items without replacement
+        selected_links = []
+        while len(selected_links) < worker_count:
+            if not pool_links:
+                pool_links = list(CUSTOM_LINKS)
+                random.shuffle(pool_links)
+            selected_links.append(pool_links.pop(0))
+            
         for link in selected_links:
-            tasks.append((link, link[:25], "CUSTOM"))
+            tasks.append((link, link[-15:], "CUSTOM"))
         return tasks
 
-    selected_slugs = random.choices(DEFAULT_SLUGS, k=worker_count)
+    # Using Slugs: guarantee unique slugs for all workers in this cycle
+    available_slugs = list(DEFAULT_SLUGS)
+    random.shuffle(available_slugs)
+
+    selected_slugs = []
+    while len(selected_slugs) < worker_count:
+        if not available_slugs:
+            available_slugs = list(DEFAULT_SLUGS)
+            random.shuffle(available_slugs)
+        selected_slugs.append(available_slugs.pop(0))
+
     for slug in selected_slugs:
         if random.random() < 0.86:
             url = f"https://app.bullpen.fi?via={slug}"
@@ -191,30 +212,51 @@ def generate_cycle_links(worker_count: int):
             url = f"https://go.bullpen.fi/{slug}"
             ltype = "DIRECT (/)"
         tasks.append((url, slug, ltype))
+        
     return tasks
 
 
-def pick_country():
-    roll = random.random()
-    if roll < 0.50:
-        return "T1", *random.choice(TIER_1)
-    elif roll < 0.85:
-        return "T2", *random.choice(TIER_2)
-    else:
-        return "T3", *random.choice(TIER_3)
+def generate_cycle_countries(worker_count: int):
+    """Guarantees each bot in the cycle gets a distinct country."""
+    shuffled = list(ALL_COUNTRIES)
+    random.shuffle(shuffled)
+    
+    cycle_countries = []
+    while len(cycle_countries) < worker_count:
+        if not shuffled:
+            shuffled = list(ALL_COUNTRIES)
+            random.shuffle(shuffled)
+        cycle_countries.append(shuffled.pop(0))
+        
+    return cycle_countries
+
+
+def generate_cycle_referrers(worker_count: int):
+    """Evenly distributes distinct referrers among workers."""
+    shuffled = list(REFERRERS)
+    random.shuffle(shuffled)
+    
+    cycle_referrers = []
+    while len(cycle_referrers) < worker_count:
+        if not shuffled:
+            shuffled = list(REFERRERS)
+            random.shuffle(shuffled)
+        cycle_referrers.append(shuffled.pop(0))
+        
+    return cycle_referrers
 
 
 # ---------------------------------------------------------
 # Worker Bot Task
 # ---------------------------------------------------------
-def execute_bot(bot_id: int, total_bots: int, target_url: str, slug: str, ltype: str, stagger_delay: float):
+def execute_bot(bot_id: int, total_bots: int, target_url: str, slug: str, ltype: str, geo_info: tuple, chosen_referrer: str, stagger_delay: float):
     time.sleep(stagger_delay)
 
     key_obj = pool.get_key()
     if not key_obj:
         return
 
-    tier, label, code = pick_country()
+    tier, label, code = geo_info
     
     params = {
         "apikey": key_obj.token,
@@ -230,8 +272,6 @@ def execute_bot(bot_id: int, total_bots: int, target_url: str, slug: str, ltype:
 
     url = f"https://api.zenrows.com/v1/?{urllib.parse.urlencode(params)}"
     
-    # Pick a referrer (handles "none" as a direct visit without a Referer header)
-    chosen_referrer = random.choice(REFERRERS)
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     }
@@ -301,14 +341,31 @@ def main():
 
             print(f"\n--- [Cycle #{cycle_num}] Starting {worker_count} bots | Target: {target_cycle_time:.1f}s | Active Keys: {len(pool.active_keys)} ---")
 
+            # Guaranteed unique distribution per cycle
             tasks = generate_cycle_links(worker_count)
+            countries = generate_cycle_countries(worker_count)
+            referrers = generate_cycle_referrers(worker_count)
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
                 futures = []
-                for idx, (url, slug, ltype) in enumerate(tasks):
+                for idx in range(worker_count):
+                    url, slug, ltype = tasks[idx]
+                    geo_info = countries[idx]
+                    chosen_ref = referrers[idx]
                     stagger = idx * random.uniform(GAP_MIN, GAP_MAX)
+                    
                     futures.append(
-                        executor.submit(execute_bot, idx + 1, worker_count, url, slug, ltype, stagger)
+                        executor.submit(
+                            execute_bot, 
+                            idx + 1, 
+                            worker_count, 
+                            url, 
+                            slug, 
+                            ltype, 
+                            geo_info, 
+                            chosen_ref, 
+                            stagger
+                        )
                     )
                 concurrent.futures.wait(futures)
 
