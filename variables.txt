@@ -1,0 +1,18 @@
+SCRAPINGANT_API_KEYS multiple using ,
+WORKER_COUNT_RANGE 5,7
+WORKER_GAP_RANGE 8.0,12.0 
+CYCLE_INTERVAL_RANGE 50.0,70.0
+
+REFERRERS https://www.google.com/,https://www.bing.com/,
+https://www.facebook.com/,https://www.instagram.com/,https://www.reddit.com/,https://web.telegram.org/,https://discord.com/,https://www.youtube.com/,https://t.co/
+
+BROWSER_RENDERING false
+true default 10credit
+
+internal
+https://app.bullpen.fi/,https://bullpen.fi/
+
+
+universal py need
+
+LINKS=https://anywebsite1.com/page,https://anywebsite2.com/ref?id=123 
